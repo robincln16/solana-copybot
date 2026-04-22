@@ -1,0 +1,83 @@
+import asyncio
+import json
+import websockets
+import httpx
+from datetime import datetime
+from config import HELIUS_WS_URL, HELIUS_RPC_URL, WALLETS_A_COPIER, DELAI_MAX_COPIE_SEC
+
+class WalletMonitor:
+    def __init__(self, callback_trade):
+        self.callback_trade = callback_trade
+        self.subscriptions = {}
+
+    async def demarrer(self):
+        print(f"[MONITOR] 🔍 Surveillance de {len(WALLETS_A_COPIER)} wallets...")
+        async with websockets.connect(HELIUS_WS_URL) as ws:
+            for wallet in WALLETS_A_COPIER:
+                await self._abonner(ws, wallet)
+                print(f"[MONITOR] ✅ Abonné à {wallet[:8]}...")
+            await self._ecouter(ws)
+
+    async def _abonner(self, ws, wallet_address):
+        payload = {"jsonrpc": "2.0", "id": wallet_address, "method": "logsSubscribe", "params": [{"mentions": [wallet_address]}, {"commitment": "confirmed"}]}
+        await ws.send(json.dumps(payload))
+        reponse = json.loads(await ws.recv())
+        if "result" in reponse:
+            self.subscriptions[wallet_address] = reponse["result"]
+
+    async def _ecouter(self, ws):
+        print("[MONITOR] 👂 En attente de transactions...")
+        async for message in ws:
+            try:
+                data = json.loads(message)
+                await self._traiter_message(data)
+            except Exception as e:
+                print(f"[MONITOR] ⚠️ Erreur : {e}")
+
+    async def _traiter_message(self, data):
+        if "result" in data:
+            return
+        try:
+            logs = data["params"]["result"]["value"]["logs"]
+            signature = data["params"]["result"]["value"]["signature"]
+            est_swap = any("Program JUP" in log for log in logs)
+            if est_swap:
+                print(f"[MONITOR] 🔄 Swap détecté ! {signature[:20]}...")
+                await self._analyser_transaction(signature)
+        except (KeyError, TypeError):
+            pass
+
+    async def _analyser_transaction(self, signature):
+        async with httpx.AsyncClient() as client:
+            payload = {"jsonrpc": "2.0", "id": 1, "method": "getTransaction", "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]}
+            reponse = await client.post(HELIUS_RPC_URL, json=payload)
+            tx = reponse.json().get("result")
+            if not tx:
+                return
+            trade = self._extraire_swap(tx, signature)
+            if trade:
+                age = datetime.now().timestamp() - tx["blockTime"]
+                if age > DELAI_MAX_COPIE_SEC:
+                    print(f"[MONITOR] ⏰ Trade trop vieux ({age:.0f}s)")
+                    return
+                await self.callback_trade(trade)
+
+    def _extraire_swap(self, tx, signature):
+        try:
+            meta = tx["meta"]
+            pre = {b["mint"]: b["uiTokenAmount"]["uiAmount"] for b in (meta.get("preTokenBalances") or []) if b.get("uiTokenAmount", {}).get("uiAmount") is not None}
+            post = {b["mint"]: b["uiTokenAmount"]["uiAmount"] for b in (meta.get("postTokenBalances") or []) if b.get("uiTokenAmount", {}).get("uiAmount") is not None}
+            token_in = token_out = None
+            montant_in = montant_out = 0
+            for mint in set(pre.keys()) | set(post.keys()):
+                diff = (post.get(mint, 0) or 0) - (pre.get(mint, 0) or 0)
+                if diff < -0.001:
+                    token_in, montant_in = mint, abs(diff)
+                elif diff > 0.001:
+                    token_out, montant_out = mint, diff
+            if token_in and token_out:
+                return {"signature": signature, "token_in": token_in, "token_out": token_out, "montant_in": montant_in, "montant_out": montant_out}
+            return None
+        except Exception as e:
+            print(f"[MONITOR] ⚠️ Erreur extraction : {e}")
+            return None
