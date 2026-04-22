@@ -1,4 +1,4 @@
 solana
 solders
 websockets
-httpx==0.24.1
+httpx==0.23.3
