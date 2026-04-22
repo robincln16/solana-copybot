@@ -1,7 +1,7 @@
 import httpx
 import base64
 from solders.keypair import Keypair
-from solders.transaction import VersionedTransaction
+from solders.transaction import Transaction
 from solana.rpc.async_api import AsyncClient
 from config import JUPITER_QUOTE_URL, JUPITER_SWAP_URL, HELIUS_RPC_URL, MON_WALLET_PRIVATE_KEY, MONTANT_PAR_TRADE_SOL, SLIPPAGE_BPS
 
@@ -51,8 +51,10 @@ class Trader:
             return data["swapTransaction"]
 
     async def _envoyer_transaction(self, swap_b64):
-        tx = VersionedTransaction.from_bytes(base64.b64decode(swap_b64))
-        tx_signe = VersionedTransaction(tx.message, [self.keypair])
+        tx = Transaction.from_bytes(base64.b64decode(swap_b64))
+tx_signe = tx
+tx_signe.sign([self.keypair])
+
         resultat = await self.client.send_raw_transaction(bytes(tx_signe))
         return str(resultat.value)
 
