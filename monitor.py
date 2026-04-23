@@ -12,11 +12,16 @@ class WalletMonitor:
 
     async def demarrer(self):
         print(f"[MONITOR] 🔍 Surveillance de {len(WALLETS_A_COPIER)} wallets...")
-        async with websockets.connect(HELIUS_WS_URL) as ws:
-            for wallet in WALLETS_A_COPIER:
-                await self._abonner(ws, wallet)
-                print(f"[MONITOR] ✅ Abonné à {wallet[:8]}...")
-            await self._ecouter(ws)
+        while True:
+            try:
+                async with websockets.connect(HELIUS_WS_URL) as ws:
+                    for wallet in WALLETS_A_COPIER:
+                        await self._abonner(ws, wallet)
+                        print(f"[MONITOR] ✅ Abonné à {wallet[:8]}...")
+                    await self._ecouter(ws)
+            except Exception as e:
+                print(f"[MONITOR] ⚠️ Déconnexion : {e} — Reconnexion dans 5s...")
+                await asyncio.sleep(5)
 
     async def _abonner(self, ws, wallet_address):
         payload = {"jsonrpc": "2.0", "id": wallet_address, "method": "logsSubscribe", "params": [{"mentions": [wallet_address]}, {"commitment": "confirmed"}]}
