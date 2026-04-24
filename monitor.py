@@ -45,7 +45,12 @@ class WalletMonitor:
         try:
             logs = data["params"]["result"]["value"]["logs"]
             signature = data["params"]["result"]["value"]["signature"]
-            est_swap = any("Program JUP" in log for log in logs)
+            est_swap = any(
+                "Program JUP" in log or
+                "Program 675kPX" in log or
+                "Program 6EF8rr" in log
+                for log in logs
+            )
             if est_swap:
                 print(f"[MONITOR] 🔄 Swap détecté ! {signature[:20]}...")
                 await self._analyser_transaction(signature)
