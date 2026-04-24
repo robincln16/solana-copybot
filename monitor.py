@@ -59,8 +59,6 @@ class WalletMonitor:
 
     async def _analyser_transaction(self, signature):
         try:
-            await asyncio.sleep(3)
-            print(f"[MONITOR] 🔍 Analyse de {signature[:20]}...")
             async with httpx.AsyncClient() as client:
                 url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
                 payload = {
@@ -69,20 +67,24 @@ class WalletMonitor:
                     "method": "getTransaction",
                     "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
                 }
-                reponse = await client.post(url, json=payload, timeout=15)
-                print(f"[MONITOR] 📡 Status : {reponse.status_code}")
-                data = reponse.json()
-                print(f"[MONITOR] 📦 Réponse : {str(data)[:150]}")
-                tx = data.get("result")
-                if not tx:
-                    print(f"[MONITOR] ❌ Transaction introuvable")
-                    return
-                trade = self._extraire_swap(tx, signature)
-                if trade:
-                    print(f"[MONITOR] 💡 Swap valide trouvé !")
-                    await self.callback_trade(trade)
-                else:
-                    print(f"[MONITOR] ⚠️ Pas de swap valide")
+                # Retry jusqu'à 5 fois avec 3 secondes entre chaque
+                for tentative in range(5):
+                    await asyncio.sleep(3)
+                    print(f"[MONITOR] 🔍 Tentative {tentative+1} pour {signature[:20]}...")
+                    reponse = await client.post(url, json=payload, timeout=15)
+                    data = reponse.json()
+                    tx = data.get("result")
+                    if tx:
+                        print(f"[MONITOR] 📋 Transaction trouvée à la tentative {tentative+1} !")
+                        trade = self._extraire_swap(tx, signature)
+                        if trade:
+                            print(f"[MONITOR] 💡 Swap valide trouvé !")
+                            await self.callback_trade(trade)
+                        else:
+                            print(f"[MONITOR] ⚠️ Pas de swap valide")
+                        return
+                    print(f"[MONITOR] ⏳ Pas encore disponible, on réessaie...")
+                print(f"[MONITOR] ❌ Transaction introuvable après 5 tentatives")
         except Exception as e:
             print(f"[MONITOR] ❌ Erreur analyse : {e}")
 
