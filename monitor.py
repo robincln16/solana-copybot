@@ -97,7 +97,6 @@ class WalletMonitor:
             pre_sol_list = meta.get("preBalances") or []
             post_sol_list = meta.get("postBalances") or []
 
-            # Token balances
             pre = {}
             for b in pre_token:
                 mint = b.get("mint")
@@ -112,7 +111,6 @@ class WalletMonitor:
                 if mint and amount is not None:
                     post[mint] = float(amount)
 
-            # Trouver le plus grand changement SOL dans toutes les balances
             max_sol_diff = 0
             for i in range(min(len(pre_sol_list), len(post_sol_list))):
                 diff = (post_sol_list[i] - pre_sol_list[i]) / 1e9
@@ -136,7 +134,6 @@ class WalletMonitor:
                     token_out = mint
                     montant_out = diff
 
-            # Compléter avec SOL si nécessaire
             if token_in and not token_out:
                 token_out = SOL_MINT
                 montant_out = abs(max_sol_diff)
@@ -152,6 +149,14 @@ class WalletMonitor:
                 elif max_sol_diff > 0.001:
                     token_out = SOL_MINT
                     montant_out = max_sol_diff
+
+            # 🚫 Filtrer les memecoins Pump.fun
+            if token_in and token_in.endswith("pump"):
+                print(f"[MONITOR] 🚫 Memecoin Pump.fun ignoré (token_in)")
+                return None
+            if token_out and token_out.endswith("pump"):
+                print(f"[MONITOR] 🚫 Memecoin Pump.fun ignoré (token_out)")
+                return None
 
             print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out} sol_diff={max_sol_diff:.4f}")
 
