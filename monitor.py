@@ -92,27 +92,32 @@ class WalletMonitor:
     def _extraire_swap(self, tx, signature):
         try:
             meta = tx["meta"]
-            pre_balances = meta.get("preTokenBalances") or []
-            post_balances = meta.get("postTokenBalances") or []
+            pre_token = meta.get("preTokenBalances") or []
+            post_token = meta.get("postTokenBalances") or []
+            pre_sol_list = meta.get("preBalances") or []
+            post_sol_list = meta.get("postBalances") or []
 
+            # Token balances
             pre = {}
-            for b in pre_balances:
+            for b in pre_token:
                 mint = b.get("mint")
                 amount = b.get("uiTokenAmount", {}).get("uiAmount")
                 if mint and amount is not None:
                     pre[mint] = float(amount)
 
             post = {}
-            for b in post_balances:
+            for b in post_token:
                 mint = b.get("mint")
                 amount = b.get("uiTokenAmount", {}).get("uiAmount")
                 if mint and amount is not None:
                     post[mint] = float(amount)
 
-            # Différence SOL natif (en lamports → SOL)
-            pre_sol_lamports = meta.get("preBalances", [0])
-            post_sol_lamports = meta.get("postBalances", [0])
-            diff_sol = (post_sol_lamports[0] - pre_sol_lamports[0]) / 1e9
+            # Trouver le plus grand changement SOL dans toutes les balances
+            max_sol_diff = 0
+            for i in range(min(len(pre_sol_list), len(post_sol_list))):
+                diff = (post_sol_list[i] - pre_sol_list[i]) / 1e9
+                if abs(diff) > abs(max_sol_diff):
+                    max_sol_diff = diff
 
             token_in = None
             token_out = None
@@ -131,25 +136,24 @@ class WalletMonitor:
                     token_out = mint
                     montant_out = diff
 
-            # Si token vendu mais pas de token reçu → SOL reçu
-            if token_in and not token_out and diff_sol > 0.001:
+            # Compléter avec SOL si nécessaire
+            if token_in and not token_out:
                 token_out = SOL_MINT
-                montant_out = diff_sol
+                montant_out = abs(max_sol_diff)
 
-            # Si token reçu mais pas de token vendu → SOL dépensé
-            if token_out and not token_in and diff_sol < -0.001:
+            if token_out and not token_in:
                 token_in = SOL_MINT
-                montant_in = abs(diff_sol)
+                montant_in = abs(max_sol_diff)
 
-            # Si SOL dépensé ET SOL reçu → cherche dans les tokens
-            if not token_in and diff_sol < -0.001:
-                token_in = SOL_MINT
-                montant_in = abs(diff_sol)
-            if not token_out and diff_sol > 0.001:
-                token_out = SOL_MINT
-                montant_out = diff_sol
+            if not token_in and not token_out:
+                if max_sol_diff < -0.001:
+                    token_in = SOL_MINT
+                    montant_in = abs(max_sol_diff)
+                elif max_sol_diff > 0.001:
+                    token_out = SOL_MINT
+                    montant_out = max_sol_diff
 
-            print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out}")
+            print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out} sol_diff={max_sol_diff:.4f}")
 
             if token_in and token_out and token_in != token_out:
                 return {
