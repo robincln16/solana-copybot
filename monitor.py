@@ -2,8 +2,7 @@ import asyncio
 import json
 import websockets
 import httpx
-from datetime import datetime
-from config import HELIUS_WS_URL, HELIUS_RPC_URL, HELIUS_API_KEY, WALLETS_A_COPIER, DELAI_MAX_COPIE_SEC
+from config import HELIUS_WS_URL, HELIUS_API_KEY, WALLETS_A_COPIER
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
 
@@ -16,7 +15,8 @@ class WalletMonitor:
         print(f"[MONITOR] 🔍 Surveillance de {len(WALLETS_A_COPIER)} wallets...")
         while True:
             try:
-                async with websockets.connect(HELIUS_WS_URL) as ws:
+                ws_url = f"wss://atlas-mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
+                async with websockets.connect(ws_url) as ws:
                     for wallet in WALLETS_A_COPIER:
                         await self._abonner(ws, wallet)
                         print(f"[MONITOR] ✅ Abonné à {wallet[:8]}...")
@@ -26,7 +26,23 @@ class WalletMonitor:
                 await asyncio.sleep(5)
 
     async def _abonner(self, ws, wallet_address):
-        payload = {"jsonrpc": "2.0", "id": wallet_address, "method": "logsSubscribe", "params": [{"mentions": [wallet_address]}, {"commitment": "confirmed"}]}
+        payload = {
+            "jsonrpc": "2.0",
+            "id": wallet_address,
+            "method": "transactionSubscribe",
+            "params": [
+                {
+                    "accountInclude": [wallet_address],
+                    "failed": False
+                },
+                {
+                    "commitment": "confirmed",
+                    "encoding": "jsonParsed",
+                    "transactionDetails": "full",
+                    "maxSupportedTransactionVersion": 0
+                }
+            ]
+        }
         await ws.send(json.dumps(payload))
         reponse = json.loads(await ws.recv())
         if "result" in reponse:
@@ -45,53 +61,38 @@ class WalletMonitor:
         if "result" in data:
             return
         try:
-            logs = data["params"]["result"]["value"]["logs"]
-            signature = data["params"]["result"]["value"]["signature"]
+            params = data.get("params", {})
+            result = params.get("result", {})
+            value = result.get("value", {})
+            signature = value.get("signature", "")
+            transaction = value.get("transaction", {})
+            meta = transaction.get("meta", {})
+
+            if not meta or meta.get("err"):
+                return
+
+            logs = meta.get("logMessages") or []
             est_swap = any(
                 "Program JUP" in log or
                 "Program 675kPX" in log or
                 "Program 6EF8rr" in log
                 for log in logs
             )
+
             if est_swap:
                 print(f"[MONITOR] 🔄 Swap détecté ! {signature[:20]}...")
-                asyncio.create_task(self._analyser_transaction(signature))
-        except (KeyError, TypeError):
-            pass
+                trade = self._extraire_swap_direct(meta, signature)
+                if trade:
+                    print(f"[MONITOR] 💡 Swap : {trade['token_in'][:8]} → {trade['token_out'][:8]}")
+                    await self.callback_trade(trade)
+                else:
+                    print(f"[MONITOR] ⚠️ Pas de swap valide")
 
-    async def _analyser_transaction(self, signature):
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getTransaction",
-                    "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
-                }
-                for tentative in range(5):
-                    await asyncio.sleep(3)
-                    print(f"[MONITOR] 🔍 Tentative {tentative+1} pour {signature[:20]}...")
-                    reponse = await client.post(url, json=payload, timeout=15)
-                    data = reponse.json()
-                    tx = data.get("result")
-                    if tx:
-                        print(f"[MONITOR] 📋 Transaction trouvée à la tentative {tentative+1} !")
-                        trade = self._extraire_swap(tx, signature)
-                        if trade:
-                            print(f"[MONITOR] 💡 Swap : {trade['token_in'][:8]} → {trade['token_out'][:8]}")
-                            await self.callback_trade(trade)
-                        else:
-                            print(f"[MONITOR] ⚠️ Pas de swap valide")
-                        return
-                    print(f"[MONITOR] ⏳ Pas encore disponible, on réessaie...")
-                print(f"[MONITOR] ❌ Transaction introuvable après 5 tentatives")
         except Exception as e:
-            print(f"[MONITOR] ❌ Erreur analyse : {e}")
+            print(f"[MONITOR] ⚠️ Erreur traitement : {e}")
 
-    def _extraire_swap(self, tx, signature):
+    def _extraire_swap_direct(self, meta, signature):
         try:
-            meta = tx["meta"]
             pre_token = meta.get("preTokenBalances") or []
             post_token = meta.get("postTokenBalances") or []
             pre_sol_list = meta.get("preBalances") or []
@@ -149,14 +150,6 @@ class WalletMonitor:
                 elif max_sol_diff > 0.001:
                     token_out = SOL_MINT
                     montant_out = max_sol_diff
-
-            # 🚫 Filtrer les memecoins Pump.fun
-            if token_in and token_in.endswith("pump"):
-                print(f"[MONITOR] 🚫 Memecoin Pump.fun ignoré (token_in)")
-                return None
-            if token_out and token_out.endswith("pump"):
-                print(f"[MONITOR] 🚫 Memecoin Pump.fun ignoré (token_out)")
-                return None
 
             print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out} sol_diff={max_sol_diff:.4f}")
 
