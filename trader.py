@@ -1,5 +1,6 @@
 import httpx
 import base64
+import time
 from solders.keypair import Keypair
 from config import JUPITER_QUOTE_URL, JUPITER_SWAP_URL, HELIUS_RPC_URL, HELIUS_API_KEY, MON_WALLET_PRIVATE_KEY, MONTANT_PAR_TRADE_SOL, SLIPPAGE_BPS
 
@@ -7,16 +8,26 @@ class Trader:
     def __init__(self):
         self.keypair = Keypair.from_base58_string(MON_WALLET_PRIVATE_KEY)
         self.wallet_public = str(self.keypair.pubkey())
+        self.trades_recents = {}
         print(f"[TRADER] Wallet : {self.wallet_public[:8]}...")
 
     async def copier_trade(self, trade):
+        # Anti-doublon — ignorer si même token dans les 30 dernières secondes
+        cle = f"{trade['token_in']}-{trade['token_out']}"
+        maintenant = time.time()
+        if cle in self.trades_recents:
+            if maintenant - self.trades_recents[cle] < 30:
+                print(f"[TRADER] ⏭️ Trade doublon ignoré")
+                return
+        self.trades_recents[cle] = maintenant
+
         print(f"[TRADER] Copie du trade...")
         try:
             quote = await self._obtenir_quote(trade["token_in"], trade["token_out"])
             if not quote:
                 print("[TRADER] ❌ Pas de quote disponible")
                 return
-            if float(quote.get("priceImpactPct", 0)) > 5:
+            if float(quote.get("priceImpactPct", 0)) > 10:
                 print("[TRADER] ⚠️ Impact prix trop élevé")
                 return
             transaction = await self._construire_swap(quote)
@@ -58,7 +69,7 @@ class Trader:
                 "userPublicKey": self.wallet_public,
                 "wrapAndUnwrapSol": True,
                 "dynamicComputeUnitLimit": True,
-                "prioritizationFeeLamports": 1000
+                "prioritizationFeeLamports": 5000
             }
             async with httpx.AsyncClient(timeout=30) as client:
                 reponse = await client.post(JUPITER_SWAP_URL, json=payload)
@@ -87,7 +98,7 @@ class Trader:
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "sendTransaction",
-                        "params": [tx_encode, {"encoding": "base64"}]
+                        "params": [tx_encode, {"encoding": "base64", "skipPreflight": True}]
                     }
                 )
                 data = reponse.json()
@@ -102,3 +113,4 @@ class Trader:
 
     async def fermer(self):
         pass
+
