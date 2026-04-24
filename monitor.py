@@ -5,6 +5,8 @@ import httpx
 from datetime import datetime
 from config import HELIUS_WS_URL, HELIUS_RPC_URL, HELIUS_API_KEY, WALLETS_A_COPIER, DELAI_MAX_COPIE_SEC
 
+SOL_MINT = "So11111111111111111111111111111111111111112"
+
 class WalletMonitor:
     def __init__(self, callback_trade):
         self.callback_trade = callback_trade
@@ -93,7 +95,6 @@ class WalletMonitor:
             pre_balances = meta.get("preTokenBalances") or []
             post_balances = meta.get("postTokenBalances") or []
 
-            # Construire dict des balances
             pre = {}
             for b in pre_balances:
                 mint = b.get("mint")
@@ -108,22 +109,20 @@ class WalletMonitor:
                 if mint and amount is not None:
                     post[mint] = float(amount)
 
-            # Aussi inclure SOL natif
-            SOL_MINT = "So11111111111111111111111111111111111111112"
-            pre_sol = meta.get("preBalances", [0])[0] / 1e9
-            post_sol = meta.get("postBalances", [0])[0] / 1e9
-            diff_sol = post_sol - pre_sol
+            # Différence SOL natif (en lamports → SOL)
+            pre_sol_lamports = meta.get("preBalances", [0])
+            post_sol_lamports = meta.get("postBalances", [0])
+            diff_sol = (post_sol_lamports[0] - pre_sol_lamports[0]) / 1e9
 
             token_in = None
             token_out = None
             montant_in = 0
             montant_out = 0
 
-            # Chercher token vendu et acheté
             tous_mints = set(pre.keys()) | set(post.keys())
             for mint in tous_mints:
-                avant = pre.get(mint, 0)
-                apres = post.get(mint, 0)
+                avant = pre.get(mint, 0) or 0
+                apres = post.get(mint, 0) or 0
                 diff = apres - avant
                 if diff < -0.000001:
                     token_in = mint
@@ -132,17 +131,27 @@ class WalletMonitor:
                     token_out = mint
                     montant_out = diff
 
-            # Si pas de token_in trouvé, c'est du SOL natif
-            if not token_in and diff_sol < -0.001:
+            # Si token vendu mais pas de token reçu → SOL reçu
+            if token_in and not token_out and diff_sol > 0.001:
+                token_out = SOL_MINT
+                montant_out = diff_sol
+
+            # Si token reçu mais pas de token vendu → SOL dépensé
+            if token_out and not token_in and diff_sol < -0.001:
                 token_in = SOL_MINT
                 montant_in = abs(diff_sol)
 
-            # Si pas de token_out trouvé, c'est du SOL natif
+            # Si SOL dépensé ET SOL reçu → cherche dans les tokens
+            if not token_in and diff_sol < -0.001:
+                token_in = SOL_MINT
+                montant_in = abs(diff_sol)
             if not token_out and diff_sol > 0.001:
                 token_out = SOL_MINT
                 montant_out = diff_sol
 
-            if token_in and token_out:
+            print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out}")
+
+            if token_in and token_out and token_in != token_out:
                 return {
                     "signature": signature,
                     "token_in": token_in,
@@ -150,11 +159,8 @@ class WalletMonitor:
                     "montant_in": montant_in,
                     "montant_out": montant_out,
                 }
-
-            print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out}")
             return None
 
         except Exception as e:
             print(f"[MONITOR] ⚠️ Erreur extraction : {e}")
             return None
-
