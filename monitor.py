@@ -3,7 +3,7 @@ import json
 import websockets
 import httpx
 from datetime import datetime
-from config import HELIUS_WS_URL, HELIUS_RPC_URL, WALLETS_A_COPIER, DELAI_MAX_COPIE_SEC
+from config import HELIUS_WS_URL, HELIUS_RPC_URL, HELIUS_API_KEY, WALLETS_A_COPIER, DELAI_MAX_COPIE_SEC
 
 class WalletMonitor:
     def __init__(self, callback_trade):
@@ -58,26 +58,36 @@ class WalletMonitor:
             pass
 
     async def _analyser_transaction(self, signature):
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         async with httpx.AsyncClient() as client:
-            payload = {"jsonrpc": "2.0", "id": 1, "method": "getTransaction", "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]}
-            reponse = await client.post(HELIUS_RPC_URL, json=payload)
+            url = f"https://api.helius.xyz/v0/transactions?api-key={HELIUS_API_KEY}"
+            payload = {"transactions": [signature]}
+            reponse = await client.post(url, json=payload, timeout=15)
             data = reponse.json()
-            tx = data.get("result")
-            if not tx:
+            if not data or len(data) == 0:
                 print(f"[MONITOR] ❌ Transaction introuvable : {signature[:20]}")
                 return
-            print(f"[MONITOR] 📋 Transaction trouvée, analyse...")
-            trade = self._extraire_swap(tx, signature)
-            if trade:
-                age = datetime.now().timestamp() - tx["blockTime"]
-                print(f"[MONITOR] ⏱️ Age du trade : {age:.0f}s")
-                if age > DELAI_MAX_COPIE_SEC:
-                    print(f"[MONITOR] ⏰ Trade trop vieux ({age:.0f}s)")
-                    return
-                await self.callback_trade(trade)
-            else:
-                print(f"[MONITOR] ⚠️ Pas de swap valide trouvé dans la transaction")
+            tx = data[0]
+            print(f"[MONITOR] 📋 Transaction trouvée !")
+            transfers = tx.get("tokenTransfers", [])
+            if len(transfers) < 2:
+                print(f"[MONITOR] ⚠️ Pas assez de token transfers")
+                return
+            token_in = transfers[0].get("mint", "")
+            token_out = transfers[-1].get("mint", "")
+            montant_in = transfers[0].get("tokenAmount", 0)
+            montant_out = transfers[-1].get("tokenAmount", 0)
+            if not token_in or not token_out:
+                print(f"[MONITOR] ⚠️ Tokens manquants")
+                return
+            print(f"[MONITOR] 💡 Swap valide : {token_in[:8]} → {token_out[:8]}")
+            await self.callback_trade({
+                "signature": signature,
+                "token_in": token_in,
+                "token_out": token_out,
+                "montant_in": montant_in,
+                "montant_out": montant_out,
+            })
 
     def _extraire_swap(self, tx, signature):
         try:
@@ -98,3 +108,4 @@ class WalletMonitor:
         except Exception as e:
             print(f"[MONITOR] ⚠️ Erreur extraction : {e}")
             return None
+
