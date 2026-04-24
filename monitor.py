@@ -37,7 +37,7 @@ class WalletMonitor:
                 data = json.loads(message)
                 await self._traiter_message(data)
             except Exception as e:
-                print(f"[MONITOR] ⚠️ Erreur : {e}")
+                print(f"[MONITOR] ⚠️ Erreur écoute : {e}")
 
     async def _traiter_message(self, data):
         if "result" in data:
@@ -53,41 +53,47 @@ class WalletMonitor:
             )
             if est_swap:
                 print(f"[MONITOR] 🔄 Swap détecté ! {signature[:20]}...")
-                await self._analyser_transaction(signature)
+                asyncio.create_task(self._analyser_transaction(signature))
         except (KeyError, TypeError):
             pass
 
     async def _analyser_transaction(self, signature):
-        await asyncio.sleep(3)
-        async with httpx.AsyncClient() as client:
-            url = f"https://api.helius.xyz/v0/transactions?api-key={HELIUS_API_KEY}"
-            payload = {"transactions": [signature]}
-            reponse = await client.post(url, json=payload, timeout=15)
-            data = reponse.json()
-            if not data or len(data) == 0:
-                print(f"[MONITOR] ❌ Transaction introuvable : {signature[:20]}")
-                return
-            tx = data[0]
-            print(f"[MONITOR] 📋 Transaction trouvée !")
-            transfers = tx.get("tokenTransfers", [])
-            if len(transfers) < 2:
-                print(f"[MONITOR] ⚠️ Pas assez de token transfers")
-                return
-            token_in = transfers[0].get("mint", "")
-            token_out = transfers[-1].get("mint", "")
-            montant_in = transfers[0].get("tokenAmount", 0)
-            montant_out = transfers[-1].get("tokenAmount", 0)
-            if not token_in or not token_out:
-                print(f"[MONITOR] ⚠️ Tokens manquants")
-                return
-            print(f"[MONITOR] 💡 Swap valide : {token_in[:8]} → {token_out[:8]}")
-            await self.callback_trade({
-                "signature": signature,
-                "token_in": token_in,
-                "token_out": token_out,
-                "montant_in": montant_in,
-                "montant_out": montant_out,
-            })
+        try:
+            await asyncio.sleep(3)
+            print(f"[MONITOR] 🔍 Analyse de {signature[:20]}...")
+            async with httpx.AsyncClient() as client:
+                url = f"https://api.helius.xyz/v0/transactions?api-key={HELIUS_API_KEY}"
+                payload = {"transactions": [signature]}
+                reponse = await client.post(url, json=payload, timeout=15)
+                print(f"[MONITOR] 📡 Status Helius : {reponse.status_code}")
+                data = reponse.json()
+                print(f"[MONITOR] 📦 Réponse : {str(data)[:100]}")
+                if not data or len(data) == 0:
+                    print(f"[MONITOR] ❌ Transaction introuvable")
+                    return
+                tx = data[0]
+                transfers = tx.get("tokenTransfers", [])
+                print(f"[MONITOR] 🔁 Transfers trouvés : {len(transfers)}")
+                if len(transfers) < 2:
+                    print(f"[MONITOR] ⚠️ Pas assez de transfers")
+                    return
+                token_in = transfers[0].get("mint", "")
+                token_out = transfers[-1].get("mint", "")
+                montant_in = transfers[0].get("tokenAmount", 0)
+                montant_out = transfers[-1].get("tokenAmount", 0)
+                if not token_in or not token_out:
+                    print(f"[MONITOR] ⚠️ Tokens manquants")
+                    return
+                print(f"[MONITOR] 💡 Swap : {token_in[:8]} → {token_out[:8]}")
+                await self.callback_trade({
+                    "signature": signature,
+                    "token_in": token_in,
+                    "token_out": token_out,
+                    "montant_in": montant_in,
+                    "montant_out": montant_out,
+                })
+        except Exception as e:
+            print(f"[MONITOR] ❌ Erreur analyse : {e}")
 
     def _extraire_swap(self, tx, signature):
         try:
@@ -108,4 +114,3 @@ class WalletMonitor:
         except Exception as e:
             print(f"[MONITOR] ⚠️ Erreur extraction : {e}")
             return None
-
