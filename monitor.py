@@ -58,6 +58,7 @@ class WalletMonitor:
             pass
 
     async def _analyser_transaction(self, signature):
+        await asyncio.sleep(2)
         async with httpx.AsyncClient() as client:
             payload = {"jsonrpc": "2.0", "id": 1, "method": "getTransaction", "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]}
             reponse = await client.post(HELIUS_RPC_URL, json=payload)
