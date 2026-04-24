@@ -67,7 +67,6 @@ class WalletMonitor:
                     "method": "getTransaction",
                     "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
                 }
-                # Retry jusqu'à 5 fois avec 3 secondes entre chaque
                 for tentative in range(5):
                     await asyncio.sleep(3)
                     print(f"[MONITOR] 🔍 Tentative {tentative+1} pour {signature[:20]}...")
@@ -78,7 +77,7 @@ class WalletMonitor:
                         print(f"[MONITOR] 📋 Transaction trouvée à la tentative {tentative+1} !")
                         trade = self._extraire_swap(tx, signature)
                         if trade:
-                            print(f"[MONITOR] 💡 Swap valide trouvé !")
+                            print(f"[MONITOR] 💡 Swap : {trade['token_in'][:8]} → {trade['token_out'][:8]}")
                             await self.callback_trade(trade)
                         else:
                             print(f"[MONITOR] ⚠️ Pas de swap valide")
@@ -91,19 +90,71 @@ class WalletMonitor:
     def _extraire_swap(self, tx, signature):
         try:
             meta = tx["meta"]
-            pre = {b["mint"]: b["uiTokenAmount"]["uiAmount"] for b in (meta.get("preTokenBalances") or []) if b.get("uiTokenAmount", {}).get("uiAmount") is not None}
-            post = {b["mint"]: b["uiTokenAmount"]["uiAmount"] for b in (meta.get("postTokenBalances") or []) if b.get("uiTokenAmount", {}).get("uiAmount") is not None}
-            token_in = token_out = None
-            montant_in = montant_out = 0
-            for mint in set(pre.keys()) | set(post.keys()):
-                diff = (post.get(mint, 0) or 0) - (pre.get(mint, 0) or 0)
-                if diff < -0.001:
-                    token_in, montant_in = mint, abs(diff)
-                elif diff > 0.001:
-                    token_out, montant_out = mint, diff
+            pre_balances = meta.get("preTokenBalances") or []
+            post_balances = meta.get("postTokenBalances") or []
+
+            # Construire dict des balances
+            pre = {}
+            for b in pre_balances:
+                mint = b.get("mint")
+                amount = b.get("uiTokenAmount", {}).get("uiAmount")
+                if mint and amount is not None:
+                    pre[mint] = float(amount)
+
+            post = {}
+            for b in post_balances:
+                mint = b.get("mint")
+                amount = b.get("uiTokenAmount", {}).get("uiAmount")
+                if mint and amount is not None:
+                    post[mint] = float(amount)
+
+            # Aussi inclure SOL natif
+            SOL_MINT = "So11111111111111111111111111111111111111112"
+            pre_sol = meta.get("preBalances", [0])[0] / 1e9
+            post_sol = meta.get("postBalances", [0])[0] / 1e9
+            diff_sol = post_sol - pre_sol
+
+            token_in = None
+            token_out = None
+            montant_in = 0
+            montant_out = 0
+
+            # Chercher token vendu et acheté
+            tous_mints = set(pre.keys()) | set(post.keys())
+            for mint in tous_mints:
+                avant = pre.get(mint, 0)
+                apres = post.get(mint, 0)
+                diff = apres - avant
+                if diff < -0.000001:
+                    token_in = mint
+                    montant_in = abs(diff)
+                elif diff > 0.000001:
+                    token_out = mint
+                    montant_out = diff
+
+            # Si pas de token_in trouvé, c'est du SOL natif
+            if not token_in and diff_sol < -0.001:
+                token_in = SOL_MINT
+                montant_in = abs(diff_sol)
+
+            # Si pas de token_out trouvé, c'est du SOL natif
+            if not token_out and diff_sol > 0.001:
+                token_out = SOL_MINT
+                montant_out = diff_sol
+
             if token_in and token_out:
-                return {"signature": signature, "token_in": token_in, "token_out": token_out, "montant_in": montant_in, "montant_out": montant_out}
+                return {
+                    "signature": signature,
+                    "token_in": token_in,
+                    "token_out": token_out,
+                    "montant_in": montant_in,
+                    "montant_out": montant_out,
+                }
+
+            print(f"[MONITOR] 🔎 token_in={token_in} token_out={token_out}")
             return None
+
         except Exception as e:
             print(f"[MONITOR] ⚠️ Erreur extraction : {e}")
             return None
+
